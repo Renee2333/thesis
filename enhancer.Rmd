@@ -1,0 +1,1461 @@
+---
+title: "enhancer"
+output: html_document
+date: "2025-02-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## read
+```{r cars}
+enhancer_hepg2 <- read.csv("C:/Users/ruini/Desktop/project2/r/motif_info_thresh_500_enhancers_hepg2.csv", header = TRUE, sep = ",")
+prediction_enhancer <-read.csv("C:/Users/ruini/Desktop/project2/r/predictions_enhancers_hepg2.csv",header = TRUE)
+classify <- read.csv("C:/Users/ruini/Desktop/thesis/tf_cooperativity_index_hepg2_pe.csv",header = TRUE)
+gradxinp_deepcompre <- read.csv("C:/Users/ruini/Desktop/thesis/gradxinp_enhancers_hepg2.csv", header = TRUE, sep = ",")
+gradxinp_enformer <- read.csv("C:/Users/ruini/Desktop/thesis/Enformer_gradxinp.csv", header = TRUE, sep = ",")
+motif_ism <- read.csv("C:/Users/ruini/Desktop/thesis/ism_motif200.csv",header = TRUE, sep = ",")
+```
+
+## set save path
+```{r}
+if (requireNamespace("rstudioapi", quietly = TRUE)) {
+  current_path <- rstudioapi::getSourceEditorContext()$path
+  if (!is.null(current_path)) {
+    setwd(dirname(current_path))
+    message("Working directory set to script folder: ", dirname(current_path))
+  }
+}
+```
+
+
+## data preparation
+```{r}
+# use abs(max) in the gradxinp for motif
+enhancer_hepg2$gradxinp_0_max <- sapply(
+  strsplit(enhancer_hepg2$gradxinp_0, ":"),
+  function(x) max(abs(as.numeric(x)))
+)
+
+enhancer_hepg2$gradxinp_0_max_orginal <- sapply(
+  strsplit(enhancer_hepg2$gradxinp_0, ":"),
+  function(x) max(as.numeric(x))
+)
+
+# calculate gradxinp_min
+enhancer_hepg2$gradxinp_0_min <- sapply(
+  strsplit(enhancer_hepg2$gradxinp_0, ":"),
+  function(x) min(abs(as.numeric(x)))
+)
+
+enhancer_hepg2$gradxinp_0_min_orginal <- sapply(
+  strsplit(enhancer_hepg2$gradxinp_0, ":"),
+  function(x) min(as.numeric(x))
+)
+
+# use abs(max) in the isa in base level for motif
+enhancer_hepg2$isa_0_max <- sapply(
+  strsplit(enhancer_hepg2$isa_0, ":"),
+  function(x) max(as.numeric(x))
+)
+
+# use max in the ism for motif
+enhancer_hepg2$ism_0_max <- sapply(
+  strsplit(enhancer_hepg2$ism_0, ":"),
+  function(x) max(as.numeric(x))
+)
+
+# use max in the ism for motif
+enhancer_hepg2$ism_0_max_abs <- sapply(
+  strsplit(enhancer_hepg2$ism_0, ":"),
+  function(x) max(abs(as.numeric(x)))
+)
+
+# use abs(isa)
+enhancer_hepg2$isa_abs <- abs(enhancer_hepg2$isa_track0)
+
+```
+
+# motif length
+```{r}
+# calculate motif length
+motif_shortest <- merged_enhancer %>%
+  mutate(motif_length = end - start) %>%
+  arrange(motif_length)  
+
+# select 200 motifs
+motif_shortest_diverse <- motif_shortest %>%
+  group_by(chromosome) %>%
+  slice_head(n = 20) %>%  
+  ungroup() %>%
+  slice_head(n = 200)     
+
+# save
+write.csv(motif_shortest_diverse, "motif_ism_shortest200.csv", row.names = FALSE)
+
+
+# 读取之前选过的 motif 数据
+previous_motifs <- read.csv("C:/Users/ruini/Desktop/thesis/enhancer/motif_ism_shortest200.csv")
+motif_remaining <- anti_join(motif_shortest, previous_motifs, by = c("chromosome", "start", "end"))
+motif_shortest_2000 <- motif_remaining %>%
+  arrange(motif_length) %>%
+  slice_head(n = 2000)
+write.csv(motif_shortest_2000, "motif_ism_shortest2000_unique.csv", row.names = FALSE)
+
+```
+
+## add prediction
+```{r}
+merged_enhancer <- merge(enhancer_hepg2, prediction_enhancer, 
+                     by.x = "region", 
+                     by.y = "X", 
+                     all = FALSE)  
+colnames(merged_enhancer)[colnames(merged_enhancer) == "X0"] <- "prediction"
+# filter prediction >= 0 
+merged_enhancer <- merged_enhancer %>%
+  filter(prediction >= 0)
+```
+
+## base level scatter
+```{r}
+parse_column <- function(col) {
+  strsplit(as.character(col), ":") %>%
+    lapply(function(x) as.numeric(x)) %>%
+    unlist()
+}
+
+gradx <- parse_column(merged_enhancer$gradxinp_0)
+ism <- parse_column(merged_enhancer$ism_0)
+isa <- parse_column(merged_enhancer$isa_0)
+
+# calculate correlation
+cor_grad_isa <- cor(gradx, isa)
+cor_grad_ism <- cor(gradx, ism)
+cor_isa_ism <- cor(isa, ism)
+
+# theme
+theme_scatter <- theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80", size = 0.3),
+    panel.grid.minor = element_line(color = "grey90", size = 0.2),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+
+# Gradxinp vs ISA
+p1 <- ggplot(data.frame(gradx, isa), aes(x = gradx, y = isa)) +
+  geom_point(alpha = 0.4, size = 0.3) +
+  annotate("text", x = Inf, y = Inf, label = sprintf("r = %.2f", cor_grad_isa),
+           hjust = 1.1, vjust = 1.5, size = 4) +
+  labs(x = "Gradxinp", y = "ISA") +
+  theme_scatter
+
+ggsave("scatter_gradx_vs_isa.pmerged_enhancer.png", p1, width = 6, height = 4)
+
+# Gradxinp vs ISM
+p2 <- ggplot(data.frame(gradx, ism), aes(x = gradx, y = ism)) +
+  geom_point(alpha = 0.4, size = 0.3) +
+  annotate("text", x = Inf, y = Inf, label = sprintf("r = %.2f", cor_grad_ism),
+           hjust = 1.1, vjust = 1.5, size = 4) +
+  labs(x = "Gradxinp", y = "ISM") +
+  theme_scatter
+
+ggsave("scatter_gradx_vs_ism.pmerged_enhancer.png", p2, width = 6, height = 4)
+
+# ISA vs ISM
+p3 <- ggplot(data.frame(isa, ism), aes(x = isa, y = ism)) +
+  geom_point(alpha = 0.4, size = 0.3) +
+  annotate("text", x = Inf, y = Inf, label = sprintf("r = %.2f", cor_isa_ism),
+           hjust = 1.1, vjust = 1.5, size = 4) +
+  labs(x = "ISA", y = "ISM") +
+  theme_scatter
+
+ggsave("scatter_isa_vs_ism.pmerged_enhancer.png", p3, width = 6, height = 4)
+
+
+```
+
+# add 200 examples of motif ISM
+```{r}
+motif_ism_merged <- motif_ism %>%
+  inner_join(merged_enhancer %>% 
+               select(region, start, end, protein, isa_track0, prediction),
+             by = c("region", "start", "end", "protein"))
+
+print(head(motif_ism_merged))
+```
+
+## function of scatter plot
+```{r}
+library(ggplot2)
+library(ggpubr)
+
+scatter_plot_with_cor <- function(data, x_var, y_var) {
+  theme_with_border <- theme_minimal() +
+    theme(
+      panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+      plot.background = element_rect(fill = "white", color = NA),
+      axis.title = element_text(size = 16),
+      axis.text = element_text(size = 14),
+      plot.title = element_text(size = 18, face = "bold"),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 15)
+    )
+  
+  p <- ggplot(data, aes(x = .data[[x_var]], y = .data[[y_var]])) +
+    geom_point(alpha = 0.5) +
+    ggpubr::stat_cor(
+      method = "pearson",
+      label.x.npc = 0.2,
+      label.y.npc = 0.9,
+      size = 5
+    )+ 
+    labs(x = x_var, y = y_var) +
+    theme_with_border
+  
+  return(p)
+}
+
+```
+
+## motif ism vs motif isa
+```{r}
+plot <- scatter_plot_with_cor(
+  data = motif_ism_merged, 
+  x_var = "ism_score",   
+  y_var = "isa_track0"   
+)
+plot
+ggsave(
+    filename = "motif_ism_vs_isa.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+## max abs gradxinp vs isa on motif level
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "gradxinp_0_max",   
+  y_var = "isa_track0"   
+)
+plot
+ggsave(
+    filename = "gradxinp_abs_max_vs_isa.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+## gradxinp max vs min
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "gradxinp_0_max_orginal",   
+  y_var = "gradxinp_0_min_orginal"   
+)
+plot
+ggsave(
+    filename = "gradxinp_max_vs_min.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# isa vs ism
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "ism_0_max",   
+  y_var = "isa_track0"   
+)
+plot
+ggsave(
+    filename = "ism_max_vs_isa.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# isa vs ism_abs
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "ism_0_max_abs",   
+  y_var = "isa_track0"   
+)
+plot
+```
+
+
+# gradxinp vs ism
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "ism_0_max",   
+  y_var = "gradxinp_0_max"   
+)
+plot
+ggsave(
+    filename = "ism_max_vs_gradxinp_abs_max.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+
+
+### predition analysis
+# prediction vs isa
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0"   
+)
+plot
+ggsave(
+    filename = "isa_vs_prediction.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# prediction vs gradxinp
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max"   
+)
+plot
+ggsave(
+    filename = "gradxinp_vs_prediction_all.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# prediction vs ism
+```{r}
+plot <- scatter_plot_with_cor(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "ism_0_max"   
+)
+plot
+ggsave(
+    filename = "ism_vs_prediction_all.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# prediction vs motif ism
+```{r}
+plot <- scatter_plot_with_cor(
+  data = motif_ism_merged, 
+  x_var = "prediction",   
+  y_var = "ism_score"   
+)
+plot
+ggsave(
+    filename = "motif_ism_vs_prediction_all.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+## find high ISM and low prediction
+```{r}
+ism_high_pred_low <- merged_enhancer %>%
+  filter(
+    ism_0_max > 2,
+    prediction < 0.2
+  )
+ism_high_pred_low
+```
+
+## correlation distribution
+```{r}
+library(ggrepel)  
+library(dplyr)
+
+safe_correlation_plot <- function(
+    data, 
+    protein_col = "protein",
+    x_var = "prediction",
+    y_var = "gradxinp_0_max",
+    bins = 30,
+    fill_colors = c("Extreme" = "darkred", "Normal" = "steelblue"),
+    label_color = "navy",
+    top_percent = 0.03
+) {
+  
+  if (!all(c(protein_col, x_var, y_var) %in% names(data))) {
+    stop("Required columns not found in dataset")
+  }
+  
+  # count the protein
+  protein_counts <- data %>%
+    count(!!sym(protein_col), name = "protein_count")
+  
+  # calculate correlation
+  correlations <- data %>%
+    group_by(!!sym(protein_col)) %>%
+    summarise(
+      correlation = suppressWarnings(
+        cor(!!sym(x_var), !!sym(y_var), 
+            method = "pearson", use = "complete.obs")
+      ),
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(correlation)) %>%
+    left_join(protein_counts, by = protein_col) %>%
+    filter(!is.na(protein_count), protein_count > 0)
+  
+  if (nrow(correlations) == 0) {
+    stop("No valid correlations calculated")
+  }
+  
+  # calculate threshold
+  threshold_low <- quantile(correlations$correlation, top_percent/2)
+  threshold_high <- quantile(correlations$correlation, 1 - top_percent/2)
+  
+  # label
+  extreme_proteins <- correlations %>%
+    filter(correlation <= threshold_low | correlation >= threshold_high) %>%
+    mutate(
+      label = paste0(!!sym(protein_col), "(n=", protein_count, ")"),
+      y_pos = pmax(pmin(10, protein_count), 1) 
+    ) %>%
+    filter(!is.na(correlation), is.finite(correlation))
+  
+  # plot
+  p <- ggplot(correlations, aes(x = correlation)) +
+    geom_histogram(
+      aes(fill = ifelse(
+        correlation <= threshold_low | correlation >= threshold_high,
+        "Extreme", "Normal")),
+      bins = bins,
+      color = "white",
+      alpha = 0.7
+    ) +
+    scale_fill_manual(values = fill_colors) +
+    labs(
+      title = paste("Correlation between", x_var, "and", y_var),
+      x = "Pearson Correlation Coefficient",
+      y = "Number of Proteins",
+      fill = "Category"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(hjust = 0.5, size = 18),
+      axis.title = element_text(size = 16),
+      axis.text = element_text(size = 14),
+      legend.title = element_text(size = 15),
+      legend.text = element_text(size = 14),
+      legend.position = "top",
+      panel.border = element_rect(color = "black", fill = NA, size = 0.8)
+    )
+
+  
+  if (nrow(extreme_proteins) > 0) {
+    p <- p +
+      geom_text_repel(
+        data = extreme_proteins,
+        aes(x = correlation, y = y_pos, label = label),
+        direction = "y",
+        angle = 90,
+        hjust = 0,
+        vjust = 0.5,
+        color = label_color,
+        size = 3,
+        segment.color = "gray",
+        box.padding = 0.5,
+        force = 0.5,
+        max.time = 2,
+        nudge_y = 2,
+        min.segment.length = 0,
+        max.overlaps = Inf
+      ) +
+      scale_y_continuous(expand = expansion(mult = c(0, 0.95)))
+  }
+  
+  return(p)
+}
+```
+
+# correlation between prediction and max gradxinp vs count
+```{r}
+plot <- safe_correlation_plot(merged_enhancer)
+plot
+ggsave(
+    filename = "correlation_gradxinp_max.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# correlation between prediction and ism vs count
+```{r}
+plot <- safe_correlation_plot(
+  data = merged_enhancer,
+  x_var = "prediction",
+  y_var = "ism_0_max",
+  fill_colors = c("Extreme" = "darkred", "Normal" = "steelblue"),
+  label_color = "navy",
+  top_percent = 0.03
+)
+plot
+ggsave(
+    filename = "correlation_ism_max.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# correlation between prediction and isa vs count
+```{r}
+plot <- safe_correlation_plot(
+  data = merged_enhancer,
+  x_var = "prediction",
+  y_var = "isa_track0",
+  fill_colors = c("Extreme" = "darkred", "Normal" = "steelblue"),
+  label_color = "navy",
+  top_percent = 0.03
+)
+plot
+ggsave(
+    filename = "correlation_isa.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# median correlations
+```{r}
+cor_pre_isa = cor(merged_enhancer$prediction, merged_enhancer$isa_track0, method = "pearson")
+cor_pre_isa
+cor_pre_grad = cor(merged_enhancer$prediction, merged_enhancer$gradxinp_0_max, method = "pearson")
+cor_pre_grad
+cor_pre_ism = cor(merged_enhancer$prediction, merged_enhancer$ism_0_max, method = "pearson")
+cor_pre_ism
+```
+# function for plotting
+```{r}
+scatter_plot_with_cor2 <- function(data, x_var, y_var, protein_name) {
+  filtered_data <- data %>% filter(protein == protein_name)
+
+  theme_with_border <- theme_minimal() +
+    theme(
+      panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+      plot.background = element_rect(fill = "white", color = NA),
+      axis.title = element_text(size = 16),
+      axis.text = element_text(size = 14),
+      plot.title = element_text(hjust = 0.5, size = 18),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 15)
+    )
+
+  p <- ggplot(filtered_data, aes(x = .data[[x_var]], y = .data[[y_var]])) +
+    geom_point(alpha = 0.5) +
+    stat_cor(
+      method = "pearson",
+      label.x.npc = 0.1,
+      label.y.npc = 0.3,
+      size = 6
+    ) +
+    labs(
+      title = protein_name,
+      x = x_var,
+      y = y_var
+    ) +
+    theme_with_border
+
+  return(p)
+}
+
+# remove outliers
+scatter_plot_with_cor3 <- function(data, x_var, y_var, protein_name) {
+  filtered_data <- data %>% filter(protein == protein_name)
+  filtered_data <- filtered_data %>% filter(prediction < 1.5)
+
+  theme_with_border <- theme_minimal() +
+    theme(
+      panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+      plot.background = element_rect(fill = "white", color = NA),
+      axis.title = element_text(size = 16),
+      axis.text = element_text(size = 14),
+      plot.title = element_text(hjust = 0.5, size = 18),
+      legend.text = element_text(size = 14),
+      legend.title = element_text(size = 15)
+    )
+
+  p <- ggplot(filtered_data, aes(x = .data[[x_var]], y = .data[[y_var]])) +
+    geom_point(alpha = 0.5) +
+    stat_cor(
+      method = "pearson",
+      label.x.npc = 0.1,
+      label.y.npc = 0.1,
+      size = 6
+    ) +
+    labs(
+      title = paste0(protein_name, " (removing outliers)"),
+      x = x_var,
+      y = y_var
+    ) +
+    theme_with_border
+
+  return(p)
+}
+```
+
+
+# check extreme proteins for ISM
+```{r}
+# TEAD1
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "ism_0_max",
+  protein_name = "TEAD1"
+)
+plot
+ggsave(
+    filename = "ISM_prediction_TEAD1_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "ism_0_max",
+  protein_name = "TEAD1"
+)
+plot
+ggsave(
+    filename = "ISM_prediction_TEAD1_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+# TEAD4
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "ism_0_max",
+  protein_name = "TEAD4"
+)
+plot
+ggsave(
+    filename = "ISM_prediction_TEAD4_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "ism_0_max",
+  protein_name = "TEAD4"
+)
+plot
+ggsave(
+    filename = "ISM_prediction_TEAD4_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+# check extreme proteins for Gradxinp
+```{r}
+# NFKB2
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max",
+  protein_name = "NFKB2"
+)
+plot
+ggsave(
+    filename = "Gradxinp_prediction_NFKB2_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max",
+  protein_name = "NFKB2"
+)
+plot
+ggsave(
+    filename = "Gradxinp_prediction_NFKB2_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# FOXA1
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max",
+  protein_name = "FOXA1"
+)
+plot
+ggsave(
+    filename = "Gradxinp_prediction_FOXA1_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max",
+  protein_name = "FOXA1"
+)
+plot
+ggsave(
+    filename = "Gradxinp_prediction_FOXA1_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# MNT
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max",
+  protein_name = "MNT"
+)
+plot
+ggsave(
+    filename = "Gradxinp_prediction_MNT_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "gradxinp_0_max",
+  protein_name = "MNT"
+)
+plot
+ggsave(
+    filename = "Gradxinp_prediction_MNT_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+# ISA extreme proteins
+```{r}
+# VEZF1
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0",
+  protein_name = "VEZF1"
+)
+plot
+ggsave(
+    filename = "ISA_prediction_VEZF1_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0",
+  protein_name = "VEZF1"
+)
+plot
+ggsave(
+    filename = "ISA_prediction_VEZF1_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# TEAD4
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0",
+  protein_name = "TEAD4"
+)
+plot
+ggsave(
+    filename = "ISA_prediction_TEAD4_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0",
+  protein_name = "TEAD4"
+)
+plot
+ggsave(
+    filename = "ISA_prediction_TEAD4_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# TEF
+plot <- scatter_plot_with_cor2(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0",
+  protein_name = "TEF"
+)
+plot
+ggsave(
+    filename = "ISA_prediction_TEF_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+plot <- scatter_plot_with_cor3(
+  data = merged_enhancer, 
+  x_var = "prediction",   
+  y_var = "isa_track0",
+  protein_name = "TEF"
+)
+plot
+ggsave(
+    filename = "ISA_prediction_TEF_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+
+
+## calculate difference
+```{r}
+merged_enhancer$diff_gradxinp_ism <- merged_enhancer$gradxinp_0_max - merged_enhancer$ism_0_max
+merged_enhancer$diff_isa_ism <- merged_enhancer$isa_track0 - merged_enhancer$ism_0_max
+```
+
+# 10 prediction groups
+```{r}
+merged_enhancer <- merged_enhancer %>%
+  mutate(
+    prediction_class = ntile(prediction, n = 10) - 1
+  ) %>%
+  mutate(
+    prediction_class = factor(prediction_class, levels = 0:9, ordered = TRUE)
+  )
+
+# get the range of prediction group
+thresholds <- merged_enhancer %>%
+  group_by(prediction_class) %>%
+  summarise(
+    count = n(),
+    min_prediction = min(prediction),
+    max_prediction = max(prediction),
+    .groups = 'drop'
+  )
+
+cat("Group Distribution and Thresholds:\n")
+print(thresholds, n = Inf)
+
+```
+# difference between gradxinp and ism
+```{r}
+library(viridis)
+output_full <- "boxplot_full.png"
+output_zoomed <- "boxplot_zoomed.png"
+
+custom_theme <- theme_minimal(base_size = 12) +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major.x = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.title = element_text(size = 16),   
+    axis.text = element_text(size = 14)
+  )
+
+# full plot
+plot_full <- ggplot(merged_enhancer, aes(x = prediction_class, 
+                                         y = diff_gradxinp_ism,
+                                         fill = prediction_class)) +
+  geom_boxplot(alpha = 0.8, show.legend = FALSE) +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "Distribution of Difference between Gradxinp and ISM by Prediction Class",
+    x = "Prediction Class",
+    y = "Difference between Gradxinp and ISM"
+  ) +
+  custom_theme
+
+# zoom
+plot_zoomed <- ggplot(merged_enhancer, aes(x = prediction_class, 
+                                            y = diff_gradxinp_ism,
+                                            fill = prediction_class)) +
+  geom_boxplot(alpha = 0.8, show.legend = FALSE, outlier.shape = NA) +  
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "Zoomed Distribution of Difference between Gradxinp and ISM by Prediction Class",
+    x = "Prediction Class",
+    y = "Difference between Gradxinp and ISM"
+  ) +
+  coord_cartesian(ylim = c(-0.35, 0.35)) +
+  custom_theme
+
+# save
+ggsave(output_full, plot_full, width = 8, height = 6, dpi = 300, bg = "white")
+ggsave(output_zoomed, plot_zoomed, width = 8, height = 6, dpi = 300, bg = "white")
+
+```
+# difference between isa and ism
+```{r}
+output_full <- "distribution_isa.png"
+output_zoomed <- "zoomed_isa.png"
+
+# full plot
+plot_full <- ggplot(merged_enhancer, aes(x = prediction_class, 
+                                         y = diff_isa_ism,
+                                         fill = prediction_class)) +
+  geom_boxplot(alpha = 0.8, show.legend = FALSE) +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "Distribution of Difference between ISA and ISM by Prediction Class",
+    x = "Prediction Class",
+    y = "Difference between ISA and ISM"
+  ) +
+  custom_theme
+
+# zoom
+plot_zoomed <- ggplot(merged_enhancer, aes(x = prediction_class, 
+                                            y = diff_isa_ism,
+                                            fill = prediction_class)) +
+  geom_boxplot(alpha = 0.8, show.legend = FALSE, outlier.shape = NA) +  # 隐藏离群值
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "Zoomed Distribution of Difference between ISA and ISM by Prediction Class",
+    x = "Prediction Class",
+    y = "Difference between ISA and ISM"
+  ) +
+  coord_cartesian(ylim = c(-0.4, 0.4)) +
+  custom_theme
+
+ggsave(output_full, plot_full, width = 8, height = 6, dpi = 300, bg = "white")
+ggsave(output_zoomed, plot_zoomed, width = 8, height = 6, dpi = 300, bg = "white")
+```
+# corrlation between predictcion and difference
+```{r}
+cor_pre_diff_grad = cor(merged_enhancer$prediction, merged_enhancer$diff_gradxinp_ism, method = "pearson")
+cor_pre_diff_grad
+cor_pre_diff_isa = cor(merged_enhancer$prediction, merged_enhancer$diff_isa_ism, method = "pearson")
+cor_pre_diff_isa
+
+```
+## see variance between two models
+```{r}
+# normalization
+calc_scaled_row_variance <- function(merged_enhancer) {
+  data_only <- merged_enhancer[, -1]  
+  abs_max <- apply(abs(data_only), 1, max)  # use max of abs
+  abs_max[abs_max == 0] <- 1
+  scaled_data <- data_only / abs_max  # scale
+  row_vars <- apply(scaled_data, 1, var)  
+  return(row_vars)
+}
+
+filtered_gradxinp_enformer <- gradxinp_enformer %>%
+  filter(region %in% merged_enhancer$region)
+
+# calculte 
+deepcompre_variance <- calc_scaled_row_variance(gradxinp_deepcompre)
+enformer_variance <- calc_scaled_row_variance(filtered_gradxinp_enformer)
+
+# plot
+plot_data <- data.frame(
+  variance = c(deepcompre_variance, enformer_variance),
+  group = rep(c("DeepCompre", "Enformer"),
+              times = c(length(deepcompre_variance), length(enformer_variance)))
+)
+
+
+plot <- ggplot(plot_data, aes(x = group, y = variance, fill = group)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  theme_minimal() +
+  labs(
+    title = "Variance Comparison of Gradxinp values between two models",
+    x = "Model",
+    y = "Variance",
+    fill = "Model"  
+  ) +
+    theme(
+    plot.title = element_text(hjust = 0.5, size = 18),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 13),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),  # 内框
+    plot.background = element_rect(fill = "white", color = NA),  # 无最外层黑框
+    panel.grid.major = element_line(color = "gray90")
+  )
+
+plot
+ggsave(
+    filename = "gradxinp_diff.png",
+    plot = plot,
+    width = 12,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# u test
+deepcompre_vals <- plot_data$variance[plot_data$group == "DeepCompre"]
+enformer_vals <- plot_data$variance[plot_data$group == "Enformer"]
+test_result <- wilcox.test(deepcompre_vals, enformer_vals)
+
+print(test_result)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+## merge two dataset
+```{r}
+class <- classify %>%
+  filter(c_sum >= 1)
+# 处理重复键 (保留第一个出现值)
+merged_enhancer <- merged_enhancer %>%
+  left_join(
+    class %>%
+      select(protein2, cooperativity_index) %>%
+      distinct(protein2, .keep_all = TRUE),  # 去重
+    by = c("protein" = "protein2")
+  )
+
+# 处理未匹配值 (填充默认值)
+merged_enhancer <- merged_enhancer %>%
+  mutate(
+    cooperativity_index = coalesce(cooperativity_index, 0)  # NA替换为0
+  )
+```
+
+## codenpendent and redundant motif
+# ism and gradxinp
+```{r}
+# 数据预处理 ---------------------------------------------------------------
+merged_enhancer <- merged_enhancer %>%
+  mutate(
+    group = case_when(
+      cooperativity_index < 0.3 ~ "redundant",
+      cooperativity_index > 0.7 ~ "codependent",
+      TRUE ~ "unknown"  # 处理NA和中间值
+    ),
+    group = factor(group, levels = c("unknown", "codependent", "redundant"))
+  ) %>%
+  # 3. 过滤无效值
+  filter(
+    !is.na(diff_gradxinp_ism),
+    !is.na(prediction_class)
+  )
+
+# 验证分组结果 -----------------------------------------------------------
+cat("Group Distribution:\n")
+merged_enhancer %>%
+  count(prediction_class, group) %>%
+  print(n = Inf)
+
+# 可视化设置 -------------------------------------------------------------
+group_colors <- c(
+  "unknown" = "#999999",
+  "codependent" = "#1b9e77",
+  "redundant" = "#d95f02"
+)
+
+# 绘制箱线图 -------------------------------------------------------------
+ggplot(merged_enhancer, 
+       aes(x = factor(prediction_class), 
+           y = diff_gradxinp_ism,
+           fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),  # 控制分组间距
+    width = 0.7,                             # 箱体宽度
+    outlier.shape = NA                       # 隐藏离群点
+  ) +
+  # 分面样式
+  scale_fill_manual(values = group_colors) +
+  labs(
+    title = "Distribution of diff_gradxinp_ism by Prediction Class and Motif Type",
+    x = "Prediction Class",
+    y = "diff_gradxinp_ism",
+    fill = "Motif Type"
+  ) +
+  coord_cartesian(ylim = c(-1, 1))+  # 聚焦主要数据范围
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "top"
+  ) +
+  # 添加统计显著性标记（可选）
+  ggpubr::stat_compare_means(
+    aes(group = group),
+    method = "kruskal.test",
+    label = "p.signif",
+    show.legend = FALSE
+  )
+
+# 进阶优化版本（解决小样本显示问题）---------------------------------------
+ggplot(merged_enhancer, 
+       aes(x = factor(prediction_class), 
+           y = diff_gradxinp_ism,
+           fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA
+  ) +
+  geom_point(
+    position = position_jitterdodge(jitter.width = 0.2),
+    size = 0.8,
+    alpha = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = group_colors) +
+  facet_wrap(~group, nrow = 1) +  # 添加分面视图
+  theme(
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold")
+  )
+
+# according to prediction class
+plot <- ggplot(merged_enhancer, 
+       aes(x = factor(group),  # X 轴改为 group，使其在每个小图内分组
+           y = diff_gradxinp_ism,
+           fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA
+  ) +
+  geom_point(
+    position = position_jitterdodge(jitter.width = 0.2),
+    size = 0.8,
+    alpha = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = group_colors) +
+  facet_wrap(~prediction_class, nrow = 2,scales = "free_y")+  # 根据 prediction_class 分面，每行 2 个
+  theme(
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold")
+  )
+plot
+ggsave(
+    filename = "try.png",
+    plot = plot,
+    width = 12,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# filter outliers
+# 计算每个 prediction_class 去除离群值后的 y 轴范围
+merged_enhancer_cleaned <- merged_enhancer %>%
+  group_by(prediction_class) %>%
+  mutate(
+    Q1 = quantile(diff_gradxinp_ism, 0.25),
+    Q3 = quantile(diff_gradxinp_ism, 0.75),
+    IQR = Q3 - Q1,
+    lower_bound = Q1 - 1.5 * IQR,
+    upper_bound = Q3 + 1.5 * IQR
+  ) %>%
+  filter(diff_gradxinp_ism >= lower_bound & diff_gradxinp_ism <= upper_bound)
+
+# 绘图
+plot <- ggplot(merged_enhancer_cleaned, 
+               aes(x = factor(group),  
+                   y = diff_gradxinp_ism,
+                   fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA  # 不显示异常值
+  ) +
+  scale_fill_manual(values = group_colors) +
+  facet_wrap(~prediction_class, nrow = 2, scales = "free_y") +  # 仍然允许每个面板的 y 轴独立
+  theme(
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold")
+  ) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+
+ggsave(
+    filename = "prediction_class_grad_ism.png",
+    plot = plot,
+    width = 12,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+
+```
+# calculate correlation
+```{r}
+# 根据 group 计算 prediction 与 diff_gradxinp_ism 和 diff_isa_ism 的相关系数
+cor_by_group <- merged_enhancer %>%
+  filter(!is.na(diff_gradxinp_ism), !is.na(diff_isa_ism), !is.na(prediction)) %>%
+  group_by(group) %>%
+  summarise(
+    cor_pre_diff_grad = cor(prediction, diff_gradxinp_ism, method = "pearson"),
+    cor_pre_diff_isa  = cor(prediction, diff_isa_ism, method = "pearson")
+  )
+
+print(cor_by_group)
+
+# 对 prediction_class != "0" 的子集再分组计算
+cor_by_group_non0 <- merged_enhancer %>%
+  filter(prediction_class != "0",
+         !is.na(diff_gradxinp_ism), !is.na(diff_isa_ism), !is.na(prediction)) %>%
+  group_by(group) %>%
+  summarise(
+    cor_pre_diff_grad = cor(prediction, diff_gradxinp_ism, method = "pearson"),
+    cor_pre_diff_isa  = cor(prediction, diff_isa_ism, method = "pearson")
+  )
+
+print(cor_by_group_non0)
+
+```
+
+# ism and isa
+```{r}
+# 绘制箱线图 -------------------------------------------------------------
+ggplot(merged_enhancer, 
+       aes(x = factor(prediction_class), 
+           y = diff_isa_ism,
+           fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),  # 控制分组间距
+    width = 0.7,                             # 箱体宽度
+    outlier.shape = NA                       # 隐藏离群点
+  ) +
+  # 分面样式
+  scale_fill_manual(values = group_colors) +
+  labs(
+    title = "Distribution of diff_isa_ism by Prediction Class and Motif Type",
+    x = "Prediction Class",
+    y = "diff_isa_ism",
+    fill = "Motif Type"
+  ) +
+  coord_cartesian(ylim = c(-1, 1.5))+  # 聚焦主要数据范围
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14),
+    axis.text.x = element_text(angle = 0, hjust = 0.5),
+    legend.position = "top"
+  ) +
+  # 添加统计显著性标记（可选）
+  ggpubr::stat_compare_means(
+    aes(group = group),
+    method = "kruskal.test",
+    label = "p.signif",
+    show.legend = FALSE
+  )
+
+# 进阶优化版本（解决小样本显示问题）---------------------------------------
+ggplot(merged_enhancer, 
+       aes(x = factor(prediction_class), 
+           y = diff_isa_ism,
+           fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA
+  ) +
+  geom_point(
+    position = position_jitterdodge(jitter.width = 0.2),
+    size = 0.8,
+    alpha = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = group_colors) +
+  facet_wrap(~group, nrow = 1) +  # 添加分面视图
+  theme(
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold")
+  )
+
+# according to prediction class
+plot <- ggplot(merged_enhancer, 
+       aes(x = factor(group),  # X 轴改为 group，使其在每个小图内分组
+           y = diff_isa_ism,
+           fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA
+  ) +
+  geom_point(
+    position = position_jitterdodge(jitter.width = 0.2),
+    size = 0.8,
+    alpha = 0.3,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(values = group_colors) +
+  facet_wrap(~prediction_class, nrow = 2,scales = "free_y")+  # 根据 prediction_class 分面，每行 2 个
+  theme(
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold")
+  )
+plot
+ggsave(
+    filename = "try_isa_ism.png",
+    plot = plot,
+    width = 12,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+
+# filter outliers
+# 计算每个 prediction_class 去除离群值后的 y 轴范围
+merged_enhancer_cleaned2 <- merged_enhancer %>%
+  group_by(prediction_class) %>%
+  mutate(
+    Q1_2 = quantile(diff_isa_ism, 0.25),
+    Q3_2 = quantile(diff_isa_ism, 0.75),
+    IQR_2 = Q3 - Q1,
+    lower_bound_2 = Q1_2 - 1.5 * IQR_2,
+    upper_bound_2 = Q3_2 + 1.5 * IQR_2
+  ) %>%
+  filter(diff_isa_ism >= lower_bound_2 & diff_isa_ism <= upper_bound_2)
+
+# 绘图
+plot <- ggplot(merged_enhancer_cleaned2, 
+               aes(x = factor(group),  
+                   y = diff_isa_ism,
+                   fill = group)) +
+  geom_boxplot(
+    position = position_dodge(width = 0.8),
+    width = 0.7,
+    outlier.shape = NA  # 不显示异常值
+  ) +
+  scale_fill_manual(values = group_colors) +
+  facet_wrap(~prediction_class, nrow = 2, scales = "free_y") +  # 仍然允许每个面板的 y 轴独立
+  theme(
+    strip.background = element_rect(fill = "gray90"),
+    strip.text = element_text(face = "bold")
+  ) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 0, hjust = 0.5)
+  )
+
+ggsave(
+    filename = "prediction_class_isa_ism.png",
+    plot = plot,
+    width = 12,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+```
+
+
+
+
+
