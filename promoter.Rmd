@@ -1,0 +1,882 @@
+---
+title: "promoter"
+output: html_document
+date: "2025-02-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## read
+```{r}
+promoter_k562 <- read.csv("C:/Users/ruini/Desktop/thesis/motif_info_thresh_500_promoters_k562.csv", header = TRUE, sep = ",")
+prediction_promoter <-read.csv("C:/Users/ruini/Desktop/thesis/predictions_promoters_k562.csv",header = TRUE)
+file_path <- "C:/Users/ruini/Desktop/thesis/gene_tss.txt"
+tss_data <- read.table(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+colnames(tss_data)[colnames(tss_data) == "Chromosome"] <- "chromosome"
+```
+
+## set save path
+```{r}
+if (requireNamespace("rstudioapi", quietly = TRUE)) {
+  current_path <- rstudioapi::getSourceEditorContext()$path
+  if (!is.null(current_path)) {
+    setwd(dirname(current_path))
+    message("Working directory set to script folder: ", dirname(current_path))
+  }
+}
+```
+
+
+## data preparation
+```{r}
+# use abs(max) in the gradxinp for motif
+promoter_k562$gradxinp_0_max <- sapply(
+  strsplit(promoter_k562$gradxinp_0, ":"),
+  function(x) max(abs(as.numeric(x)))
+)
+
+promoter_k562$gradxinp_0_max_orginal <- sapply(
+  strsplit(promoter_k562$gradxinp_0, ":"),
+  function(x) max(as.numeric(x))
+)
+
+# calculate gradxinp_min
+promoter_k562$gradxinp_0_min <- sapply(
+  strsplit(promoter_k562$gradxinp_0, ":"),
+  function(x) min(abs(as.numeric(x)))
+)
+
+promoter_k562$gradxinp_0_min_orginal <- sapply(
+  strsplit(promoter_k562$gradxinp_0, ":"),
+  function(x) min(as.numeric(x))
+)
+
+# use abs(max) in the isa in base level for motif
+promoter_k562$isa_0_max <- sapply(
+  strsplit(promoter_k562$isa_0, ":"),
+  function(x) max(as.numeric(x))
+)
+
+# use abs(max) in the ism for motif
+promoter_k562$ism_0_max <- sapply(
+  strsplit(promoter_k562$ism_0, ":"),
+  function(x) max(as.numeric(x))
+)
+```
+
+## add prediction
+```{r}
+merged_promoter <- merge(promoter_k562, prediction_promoter, 
+                     by.x = "region", 
+                     by.y = "X", 
+                     all = FALSE)  
+colnames(merged_promoter)[colnames(merged_promoter) == "X0"] <- "prediction"
+
+# filter prediction score < 0
+merged_promoter <- merged_promoter %>%
+  filter(prediction >= 0)
+
+merged_promoter
+```
+
+## calculate motif center
+```{r}
+merged_promoter <- merged_promoter %>%
+  mutate(motif_center = (start + end) / 2)
+```
+
+
+## add TSS
+```{r}
+library(dplyr)
+library(purrr)
+library(tidyr)
+
+find_nearest_tss <- function(motif_chr, motif_strand, motif_center) {
+  motif_chr <- as.character(motif_chr)[1]
+  motif_strand <- as.character(motif_strand)[1]
+  motif_center <- as.numeric(motif_center)[1]
+
+  tss_subset <- tss_data %>% filter(chromosome == motif_chr & strand == motif_strand)
+
+  if (nrow(tss_subset) == 0) {
+    return(data.frame(closest_TSS = NA_real_, tss_strand = NA_character_))
+  }
+
+  nearest_idx <- which.min(abs(tss_subset$TSS - motif_center))
+  nearest_TSS <- tss_subset[nearest_idx, ]
+
+  return(data.frame(closest_TSS = nearest_TSS$TSS, tss_strand = nearest_TSS$strand))
+}
+
+merged_promoter <- merged_promoter %>%
+  mutate(
+    nearest_TSS_info = pmap(
+      list(chromosome, strand, motif_center),
+      find_nearest_tss
+    )
+  ) %>%
+  unnest_wider(nearest_TSS_info) %>%  
+  mutate(
+    relative_position = ifelse(tss_strand == "-", -(motif_center - closest_TSS), motif_center - closest_TSS),
+    up_downstream = case_when(
+      relative_position > 0 ~ "downstream",
+      relative_position < 0 ~ "upstream",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+
+## calculate threshold
+```{r}
+library(tidyverse)
+
+isa_vals <- merged_promoter$isa_track0
+isa_pos <- isa_vals[isa_vals > 0]
+isa_neg <- isa_vals[isa_vals < 0]
+
+# calculate 5% threshold
+isa_pos_thresh <- quantile(isa_pos, 0.025, na.rm = TRUE)
+isa_neg_thresh <- quantile(isa_neg, 0.975, na.rm = TRUE)  
+
+cat("ISA threshold (left of 0):", isa_neg_thresh, "\n")
+cat("ISA threshold (right of 0):", isa_pos_thresh, "\n")
+
+# plot
+ggplot(data.frame(isa = isa_vals), aes(x = isa)) +
+  geom_density(fill = "skyblue", alpha = 0.5) +
+  geom_vline(xintercept = c(isa_pos_thresh, isa_neg_thresh), color = "steelblue", linetype = "dashed") +
+  labs(title = "ISA Track0 Distribution with ±2.5% thresholds",
+       x = "isa_track0", y = "Density") +
+  theme_minimal()
+
+
+## for ISM
+ism_vals <- merged_promoter$ism_0 %>%
+  str_split(":", simplify = FALSE) %>%
+  unlist() %>%
+  as.numeric()
+
+ism_pos <- ism_vals[ism_vals > 0]
+ism_neg <- ism_vals[ism_vals < 0]
+
+# calculate threshold
+ism_pos_thresh <- quantile(ism_pos, 0.025, na.rm = TRUE)
+ism_neg_thresh <- quantile(ism_neg, 0.975, na.rm = TRUE)
+cat("ISM threshold (left of 0):", ism_neg_thresh, "\n")
+cat("ISM threshold (right of 0):", ism_pos_thresh, "\n")
+
+# plot
+ggplot(data.frame(ism = ism_vals), aes(x = ism)) +
+  geom_density(fill = "lightcoral", alpha = 0.5) +
+  geom_vline(xintercept = c(ism_pos_thresh, ism_neg_thresh), color = "tomato", linetype = "dashed") +
+  labs(title = "ISM_0 Distribution with ±2.5% thresholds",
+       x = "ism_0 values", y = "Density") +
+  theme_minimal()
+
+
+```
+
+## ratios for activators and repressors 
+```{r}
+# add ism_sign and isa_sign
+merged_promoter <- merged_promoter %>%
+  mutate(
+    ism_sign = sapply(ism_0, function(x) {
+      values <- as.numeric(unlist(strsplit(as.character(x), ":")))
+      if (mean(values < -0.001, na.rm = TRUE) >= 0.7) {
+        "repressor"
+      } else if (mean(values > 0.001, na.rm = TRUE) >= 0.7) {
+        "activator"
+      } else {
+        "unknown"
+      }
+    }),
+    isa_sign = case_when(
+      isa_track0 < -0.0005491227 ~ "repressor",
+      isa_track0 >  0.001233367  ~ "activator",
+      TRUE ~ "unknown"
+    )
+  )
+
+# group by protein
+protein_summary <- merged_promoter %>%
+  group_by(protein) %>%
+  summarise(
+    ism_activator_ratio = mean(ism_sign == "activator", na.rm = TRUE),
+    ism_repressor_ratio = mean(ism_sign == "repressor", na.rm = TRUE),
+    
+    isa_activator_ratio = mean(isa_sign == "activator", na.rm = TRUE),
+    isa_repressor_ratio = mean(isa_sign == "repressor", na.rm = TRUE),
+    
+    ism_defined = case_when(
+      ism_activator_ratio > 0.5 ~ "activator",
+      ism_repressor_ratio > 0.5 ~ "repressor",
+      TRUE ~ "unknown"
+    ),
+    isa_defined = case_when(
+      isa_activator_ratio > 0.5 ~ "activator",
+      isa_repressor_ratio > 0.5 ~ "repressor",
+      TRUE ~ "unknown"
+    ),
+    .groups = "drop"
+  )
+
+print(protein_summary)
+write.csv(protein_summary, "protein_summary.csv", row.names = FALSE)
+
+```
+
+# find position dependent repressor
+```{r}
+library(ggplot2)
+library(ggpubr)
+
+proteins <- unique(merged_promoter$protein)
+results_list <- list()
+plot_list <- list()
+
+# for each protein
+for (prot in proteins) {
+  df <- merged_promoter %>%
+    filter(protein == prot) %>%
+    mutate(
+      regulator_type = case_when(
+        isa_track0 > 0.001233367 ~ "activator",
+        isa_track0 < -0.0005491227 ~ "repressor",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(regulator_type))
+
+  if (length(unique(df$regulator_type)) < 2) next
+
+  # calculate median
+  medians <- df %>%
+    group_by(regulator_type) %>%
+    summarize(median_position = median(relative_position), .groups = "drop")
+
+  # u test
+  test <- wilcox.test(relative_position ~ regulator_type, data = df)
+
+  # save result
+  results_list[[prot]] <- data.frame(
+    protein = prot,
+    activator_median = medians$median_position[medians$regulator_type == "activator"],
+    repressor_median = medians$median_position[medians$regulator_type == "repressor"],
+    p_value = test$p.value
+  )
+
+  # plot significant results
+  if (test$p.value < 0.05) {
+    p <- ggplot(df, aes(x = regulator_type, y = relative_position, fill = regulator_type)) +
+      geom_violin(trim = FALSE, alpha = 0.6) +
+      geom_boxplot(width = 0.1, outlier.size = 1, alpha = 0.8) +
+      labs(title = paste0("Protein: ", prot, ", p = ", signif(test$p.value, 3)),
+           x = "Regulator Type", y = "Relative Position") +
+      theme_minimal()
+    print(p)  
+  }
+}
+
+results_table <- bind_rows(results_list)
+print(results_table)
+
+```
+
+# siginificant results
+```{r}
+significant_proteins <- results_table %>%
+  filter(p_value < 0.05)
+significant_proteins
+```
+
+# filter dataset
+```{r}
+# filter relative_position betweeb -300 and 100 
+filtered_promoter <- merged_promoter %>%
+  filter(relative_position >= -300, relative_position <= 100)
+
+proteins <- unique(filtered_promoter$protein)
+results_list <- list()
+
+# 遍历每个 protein
+for (prot in proteins) {
+  df <- filtered_promoter %>%
+    filter(protein == prot) %>%
+    mutate(
+      regulator_type = case_when(
+        isa_track0 > 0.001233367 ~ "activator",
+        isa_track0 < -0.0005491227 ~ "repressor",
+        TRUE ~ NA_character_
+      )
+    ) %>%
+    filter(!is.na(regulator_type))
+
+  if (length(unique(df$regulator_type)) < 2) next
+
+  # calculate median
+  medians <- df %>%
+    group_by(regulator_type) %>%
+    summarize(median_position = median(relative_position), .groups = "drop")
+
+  test <- wilcox.test(relative_position ~ regulator_type, data = df)
+
+  results_list[[prot]] <- data.frame(
+    protein = prot,
+    activator_median = medians$median_position[medians$regulator_type == "activator"],
+    repressor_median = medians$median_position[medians$regulator_type == "repressor"],
+    p_value = test$p.value
+  )
+
+  if (test$p.value < 0.05) {
+    p <- ggplot(df, aes(x = regulator_type, y = relative_position, fill = regulator_type)) +
+      geom_violin(trim = FALSE, alpha = 0.6) +
+      geom_boxplot(width = 0.1, outlier.size = 1, alpha = 0.8) +
+      labs(title = paste0("Protein: ", prot, ", p = ", signif(test$p.value, 3)),
+           x = "Regulator Type", y = "Relative Position") +
+      theme_minimal()
+    print(p)  
+  }
+}
+
+results_table <- bind_rows(results_list)
+print(results_table)
+
+significant_proteins <- results_table %>%
+  filter(p_value < 0.05)
+significant_proteins
+write.csv(significant_proteins, "significant_proteins.csv", row.names = TRUE)
+```
+
+
+## distribution of activators and repressors
+```{r}
+# add activator / repressor label
+labeled_promoter <- filtered_promoter %>%
+  mutate(
+    regulator_type = case_when(
+      isa_track0 > 0.001233367 ~ "activator",
+      isa_track0 < -0.0005491227 ~ "repressor",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(regulator_type))
+
+
+ratio_summary <- labeled_promoter %>%
+  group_by(regulator_type, up_downstream) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(regulator_type) %>%
+  mutate(
+    total = sum(count),
+    proportion = count / total
+  )
+
+print(ratio_summary)
+
+# calculate median
+median_positions <- labeled_promoter %>%
+  group_by(regulator_type) %>%
+  summarise(median_relative_position = median(relative_position), .groups = "drop")
+
+print(median_positions)
+
+# plot
+plot <- ggplot(labeled_promoter, aes(x = regulator_type, y = relative_position, fill = regulator_type)) +
+  geom_violin(trim = FALSE, alpha = 0.6) +
+  geom_boxplot(width = 0.1, outlier.size = 1, alpha = 0.8) +
+  labs(title = "Distribution of Relative Position by Regulator Type",
+       x = "Regulator Type", y = "Relative Position") +
+  theme_minimal()+
+  scale_fill_manual(values = c("activator" = "steelblue", "repressor" = "tomato")) +
+  theme(
+    panel.border = element_rect(colour = "black", fill = NA, linewidth = 1),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none", 
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(color = "grey90")
+  )
+plot
+ggsave(
+    filename = "distribution of activator and repressors.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+## ratio of upstream and downstream motifs
+```{r}
+merged_promoter %>%
+  count(up_downstream) %>%
+  mutate(proportion = n / sum(n))
+merged_promoter %>%
+  group_by(protein, up_downstream) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(protein) %>%
+  mutate(
+    proportion = n / sum(n),
+    total_n = sum(n)
+  ) %>%
+  select(-n) %>%
+  pivot_wider(names_from = up_downstream, values_from = proportion, values_fill = 0) %>%
+  arrange(desc(total_n))
+
+
+filtered_promoter %>%
+  count(up_downstream) %>%
+  mutate(proportion = n / sum(n))
+filtered_promoter %>%
+  group_by(protein, up_downstream) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(protein) %>%
+  mutate(
+    proportion = n / sum(n),
+    total_n = sum(n)
+  ) %>%
+  select(-n) %>%
+  pivot_wider(names_from = up_downstream, values_from = proportion, values_fill = 0) %>%
+  arrange(desc(total_n))
+
+```
+
+## YY1
+```{r}
+# filter YY1
+YY1_data <- merged_promoter %>% filter(protein == "YY1")
+
+# group by ISA score
+YY1_positive <- YY1_data %>% filter(isa_track0 > 0.001233367)  
+YY1_negative <- YY1_data %>% filter(isa_track0 < -0.0005491227) 
+YY1_positive <- YY1_positive %>%
+  mutate(group = "positive")
+YY1_negative <- YY1_negative %>%
+  mutate(group = "negative")
+
+# merge dataset
+merged_data <- bind_rows(YY1_positive, YY1_negative)
+
+# plot
+plot <- ggplot(merged_data, aes(x = group, y = relative_position, color = group)) +
+  geom_boxplot(outlier.size = 2) +  
+  labs(
+    title = "Relative Position of YY1 Motifs (Positive vs Negative)",
+    x = "Group",
+    y = "Relative Position to TSS"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("positive" = "steelblue", "negative" = "tomato")) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )
+plot
+
+ggsave(
+    filename = "YY1_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+```
+# filter
+```{r}
+# filter -100bp to 100bp
+filtered_data <- merged_data %>%
+  filter(relative_position >= -100 & relative_position <= 100)
+
+plot <- ggplot(filtered_data, aes(x=group, y=relative_position, color=group)) +
+  geom_boxplot(outlier.size = 2) +
+  labs(title="Relative Position of filtered YY1 Motifs (Positive vs Negative)",
+       x="Group",
+       y="Relative Position to TSS") +
+  theme_minimal() +  
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )+
+  scale_color_manual(values=c("positive"="steelblue", "negative"="tomato"))
+plot
+ggsave(
+    filename = "YY1_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+```
+## up/downsream
+```{r}
+# original
+YY1_data <- merged_data %>%
+  filter(!is.na(isa_track0), !is.na(up_downstream))  
+
+plot <- ggplot(YY1_data, aes(x=up_downstream, y=isa_track0, color=up_downstream)) +
+  geom_boxplot(outlier.size = 2) +
+  labs(title="ISA scores of YY1 Motifs (Upstream vs Downstream)",
+       x="Group",
+       y="ISA Scores") +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )+
+  scale_color_manual(
+    values = c("upstream" = "steelblue", "downstream" = "tomato"),
+    name = "group"  
+  )
+ggsave(
+    filename = "YY1_3.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# filtered
+YY1_data2 <- filtered_data %>%
+  filter(!is.na(isa_track0), !is.na(up_downstream))  
+plot <- ggplot(YY1_data2, aes(x=up_downstream, y=isa_track0, color=up_downstream)) +
+  geom_boxplot(outlier.size = 2) +
+  labs(title="ISA scores of filtered YY1 Motifs (Upstream vs Downstream)",
+       x="Group",
+       y="ISA Scores") +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )+
+  scale_color_manual(
+    values = c("upstream" = "steelblue", "downstream" = "tomato"),
+    name = "group"  
+  )
+ggsave(
+    filename = "YY1_4.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+## TBP
+```{r}
+# filter TBP
+TBP_data <- merged_promoter %>% filter(protein == "TBP")
+
+# group by ISA score
+TBP_positive <- TBP_data %>% filter(isa_track0 > 0.001233367)  
+TBP_negative <- TBP_data %>% filter(isa_track0 < -0.0005491227) 
+TBP_positive <- TBP_positive %>%
+  mutate(group = "positive")
+TBP_negative <- TBP_negative %>%
+  mutate(group = "negative")
+
+# merge dataset
+merged_data <- bind_rows(TBP_positive, TBP_negative)
+
+# plot
+plot <- ggplot(merged_data, aes(x = group, y = relative_position, color = group)) +
+  geom_boxplot(outlier.size = 2) +  
+  labs(
+    title = "Relative Position of TBP Motifs (Positive vs Negative)",
+    x = "Group",
+    y = "Relative Position to TSS"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("positive" = "steelblue", "negative" = "tomato")) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )
+plot
+
+ggsave(
+    filename = "TBP_1.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+```
+# filter
+```{r}
+# filter -100bp to 100bp
+filtered_data <- merged_data %>%
+  filter(relative_position >= -100 & relative_position <= 100)
+
+plot <- ggplot(filtered_data, aes(x=group, y=relative_position, color=group)) +
+  geom_boxplot(outlier.size = 2) +
+  labs(title="Relative Position of filtered TBP Motifs (Positive vs Negative)",
+       x="Group",
+       y="Relative Position to TSS") +
+  theme_minimal() +  
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )+
+  scale_color_manual(values=c("positive"="steelblue", "negative"="tomato"))
+plot
+ggsave(
+    filename = "TBP_2.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+
+median_positions <- filtered_data %>%
+  group_by(group) %>%
+  summarise(median_relative_position = median(relative_position, na.rm = TRUE))
+
+print(median_positions)
+
+```
+## up/downsream
+```{r}
+# original
+TBP_data <- merged_data %>%
+  filter(!is.na(isa_track0), !is.na(up_downstream))  
+
+plot <- ggplot(TBP_data, aes(x=up_downstream, y=isa_track0, color=up_downstream)) +
+  geom_boxplot(outlier.size = 2) +
+  labs(title="ISA scores of TBP Motifs (Upstream vs Downstream)",
+       x="Group",
+       y="ISA Scores") +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )+
+  scale_color_manual(
+    values = c("upstream" = "steelblue", "downstream" = "tomato"),
+    name = "group"  
+  )
+ggsave(
+    filename = "TBP_3.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+
+# filtered
+TBP_data2 <- filtered_data %>%
+  filter(!is.na(isa_track0), !is.na(up_downstream))  
+plot <- ggplot(TBP_data2, aes(x=up_downstream, y=isa_track0, color=up_downstream)) +
+  geom_boxplot(outlier.size = 2) +
+  labs(title="ISA scores of filtered TBP Motifs (Upstream vs Downstream)",
+       x="Group",
+       y="ISA Scores") +
+  theme_minimal() +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, size = 0.8),  
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.title = element_text(hjust = 0.5, size = 18),  
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.position = "none"
+  )+
+  scale_color_manual(
+    values = c("upstream" = "steelblue", "downstream" = "tomato"),
+    name = "group"  
+  )
+ggsave(
+    filename = "TBP_4.png",
+    plot = plot,
+    width = 8,
+    height = 6,
+    dpi = 300,
+    bg = "white"
+  )
+```
+
+
+## analyse repressors
+```{r}
+analyze_protein_position <- function(protein_name, data, 
+                                     pos_cutoff = 0.001233367, 
+                                     neg_cutoff = -0.0005491227, 
+                                     output_prefix = "output") {
+  library(dplyr)
+  library(ggplot2)
+
+  # filter protein
+  protein_data <- data %>% filter(protein == protein_name)
+  
+  # divide activator / repressor
+  positive <- protein_data %>% filter(isa_track0 > pos_cutoff) %>% mutate(group = "positive")
+  negative <- protein_data %>% filter(isa_track0 < neg_cutoff) %>% mutate(group = "negative")
+  merged_data <- bind_rows(positive, negative)
+  
+  # plot1: full range boxplot
+  plot1 <- ggplot(merged_data, aes(x = group, y = relative_position, color = group)) +
+    geom_boxplot(outlier.size = 2) +
+    labs(title = protein_name,
+         x = "Group", y = "Relative Position to TSS") +
+    theme_minimal() +
+    scale_color_manual(values = c("positive" = "steelblue", "negative" = "tomato")) +
+    theme(panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+          plot.title = element_text(hjust = 0.5, size = 18),  
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14),
+          legend.position = "none", 
+          plot.background = element_rect(fill = "white", color = NA))
+  ggsave(paste0(output_prefix, "_1.png"), plot = plot1, width = 8, height = 6, dpi = 300, bg = "white")
+  
+  # filter relative position between -250bp and 50bp
+  filtered_data <- merged_data %>% filter(relative_position >= -250, relative_position <= 50)
+  
+  # plot2: filtered range boxplot
+  plot2 <- ggplot(filtered_data, aes(x = group, y = relative_position, color = group)) +
+    geom_boxplot(outlier.size = 2) +
+    labs(title = protein_name,
+         x = "Group", y = "Relative Position to TSS") +
+    theme_minimal() +
+    scale_color_manual(values = c("positive" = "steelblue", "negative" = "tomato")) +
+    theme(panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+          plot.title = element_text(hjust = 0.5, size = 18),  
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14),
+          legend.position = "none",
+          plot.background = element_rect(fill = "white", color = NA))
+  ggsave(paste0(output_prefix, "_2.png"), plot = plot2, width = 12, height = 6, dpi = 300, bg = "white")
+  
+  # plot3: upstream/downstream ISA (full)
+  updown_data <- merged_data %>%
+    filter(!is.na(isa_track0), !is.na(up_downstream))
+  
+  plot3 <- ggplot(updown_data, aes(x = up_downstream, y = isa_track0, color = up_downstream)) +
+    geom_boxplot(outlier.size = 2) +
+    labs(title = protein_name,
+         x = "Group", y = "ISA Scores") +
+    theme_minimal() +
+    scale_color_manual(values = c("upstream" = "tomato", "downstream" = "steelblue"), name = "group") +
+    theme(panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+          plot.title = element_text(hjust = 0.5, size = 18),  
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14),
+          legend.position = "none",
+          plot.background = element_rect(fill = "white", color = NA))
+  ggsave(paste0(output_prefix, "_3.png"), plot = plot3, width = 8, height = 6, dpi = 300, bg = "white")
+  
+  # plot4: upstream/downstream ISA (filtered)
+  updown_filtered <- filtered_data %>%
+    filter(!is.na(isa_track0), !is.na(up_downstream))
+  
+  plot4 <- ggplot(updown_filtered, aes(x = up_downstream, y = isa_track0, color = up_downstream)) +
+    geom_boxplot(outlier.size = 2) +
+    labs(title = protein_name,
+         x = "Group", y = "ISA Scores") +
+    theme_minimal() +
+    scale_color_manual(values = c("upstream" = "tomato", "downstream" = "steelblue"), name = "group") +
+    theme(panel.border = element_rect(color = "black", fill = NA, size = 0.8),
+          plot.title = element_text(hjust = 0.5, size = 18),  
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14),
+          legend.position = "none",
+          plot.background = element_rect(fill = "white", color = NA))
+  ggsave(paste0(output_prefix, "_4.png"), plot = plot4, width = 12, height = 6, dpi = 300, bg = "white")
+
+  # plot5: density of relative_position (filtered)
+  plot5 <- ggplot(filtered_data, aes(x = relative_position)) +
+    geom_density(aes(color = group), linewidth = 1) +
+    geom_density(aes(fill = group), alpha = 0.2, linewidth = 0, show.legend = FALSE) +
+    scale_color_manual(values = c("positive" = "#4682B4", "negative" = "#FF6347"), name = "Group") +
+    scale_fill_manual(values = c("positive" = "#4682B4", "negative" = "#FF6347"), guide = "none") +
+    labs(
+      title = protein_name,
+      x = "Relative Position to TSS",
+      y = "Density",
+      color = "Group"
+    ) +
+    theme_minimal() +
+    theme(
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+      panel.grid = element_blank(),
+      plot.title = element_text(hjust = 0.5, size = 20),  
+      axis.title = element_text(size = 18),  
+      axis.text = element_text(size = 16),   
+      legend.text = element_text(size = 16), 
+      legend.title = element_text(size = 18),
+      legend.position = c(0.05, 0.95),
+      legend.justification = c(0, 1),
+      legend.background = element_rect(fill = "white", color = NA),
+      legend.key = element_blank()
+    )
+
+  ggsave(paste0(output_prefix, "_5_density.png"), plot = plot5, width = 10, height = 4, dpi = 300, bg = "white")
+
+  message("Plots saved for protein: ", protein_name)
+}
+
+```
+# SP1
+```{r}
+analyze_protein_position("SP1", merged_promoter, output_prefix = "SP1")
+```
+# NRF1
+```{r}
+analyze_protein_position("NRF1", merged_promoter, output_prefix = "NRF1")
+```
+# NFYA
+```{r}
+analyze_protein_position("NFYA", merged_promoter, output_prefix = "NFYA")
+```
+# IKZF1
+```{r}
+analyze_protein_position("IKZF1", merged_promoter, output_prefix = "IKZF1")
+```
+# BHLHE40
+```{r}
+analyze_protein_position("BHLHE40", merged_promoter, output_prefix = "BHLHE40")
+```
+
